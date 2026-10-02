@@ -1,0 +1,50 @@
+# ROMs and extracted Nintendo 3DS binaries (Copyrighted assets)
+*.cci
+*.3ds
+*.cia
+*.cxi
+*.bin
+romfs/
+romfs.bin
+code.bin
+code_decompressed.bin
+exheader.bin
+
+# Android build artifacts
+.gradle/
+build/
+**/build/
+.cxx/
+**/.cxx/
+local.properties
+**/local.properties
+*.apk
+*.aab
+
+# Recompilation build objects and intermediate binaries
+recomp_out/*.o
+recomp_out/*.so
+3dsrecomp/target/
+
+# Logs and debug traces
+*.log
+horizon_os*.log
+
+# Ghidra and reverse-engineering workspace files
+ghidra_proj/
+
+# Scratch & test scripts
+test.py
+test_svc.c
+test_svc.py
+
+# IDE & Editor files
+.idea/
+*.iml
+.vscode/
+*.swp
+*~
+
+# OS files
+.DS_Store
+Thumbs.db

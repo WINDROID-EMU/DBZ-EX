@@ -1,0 +1,3 @@
+[submodule "3dsrecomp"]
+	path = 3dsrecomp
+	url = https://github.com/WINDROID-EMU/3dsrecomp.git
