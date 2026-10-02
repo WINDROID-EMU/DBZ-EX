@@ -228,10 +228,12 @@ bool HorizonOS::WriteBytes(uint32_t addr, const void* src, size_t size) {
 void HorizonOS::NotifyFramebufferUpdated(uint32_t address, uint32_t width, uint32_t height, uint32_t format) {
     pthread_mutex_lock(&m_frameMutex);
     
-    // Differentiate Top Screen vs Bottom Screen by VRAM address and dimensions
-    bool isBottomScreen = (address >= 0x1F200000) || (width == 320 && height == 240) || (width == 240 && height == 320);
-    bool isTopRightEye = (address >= 0x1F08CA00 && address < 0x1F200000);
-    bool isTopScreen = !isBottomScreen && ((width == 400 && height == 240) || (width == 240 && height == 400));
+    // Differentiate Top Screen vs Bottom Screen by dimensions:
+    // Top Screen is 400x240 (portrait 240x400, including VRAM-B 0x1F300000/0x1F346500)
+    // Bottom Screen is 320x240 (portrait 240x320)
+    bool isTopScreen = ((width == 400 && height == 240) || (width == 240 && height == 400));
+    bool isBottomScreen = !isTopScreen && ((width == 320 && height == 240) || (width == 240 && height == 320));
+    bool isTopRightEye = (address == 0x1F08CA00 || address == 0x1F0D2F00);
 
     if (isTopScreen) {
         size_t bpp = (format == 0) ? 4 : ((format == 1) ? 3 : 2);

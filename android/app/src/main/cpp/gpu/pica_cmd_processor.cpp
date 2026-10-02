@@ -175,7 +175,7 @@ void PicaCommandProcessor::ExecuteDrawElements(HorizonOS* os) {
     static const uint32_t yLut[8] = { 0x00, 0x02, 0x08, 0x0A, 0x20, 0x22, 0x28, 0x2A };
 
     // Native 3DS framebuffers are portrait: 240x400 (top) and 240x320 (bottom)
-    bool isBottom = (colorBufPhys == 0x18177000) || (colorBufPhys >= 0x18200000);
+    bool isBottom = (colorBufPhys >= 0x18200000) && (colorBufPhys != 0x18177000);
     uint32_t fbW = 240;
     uint32_t fbH = isBottom ? 320 : 400;
     uint8_t* fbPtr = os ? os->GetPointer(colorBufPhys) : nullptr;
@@ -198,16 +198,19 @@ void PicaCommandProcessor::ExecuteDrawElements(HorizonOS* os) {
                 uint32_t tileY = (uint32_t)ty / 8;
                 uint32_t subBx = ((uint32_t)tx & 7U) / 4;
                 uint32_t subBy = ((uint32_t)ty & 7U) / 4;
-                uint32_t subBlockIdx = subBx * 2 + subBy;
+                uint32_t subBlockIdx = (subBx & 1U) | ((subBy & 1U) << 1U);
                 uint32_t blockOffset = (tileX * tilesPerCol + tileY) * 64 + subBlockIdx * 16;
 
                 if (blockOffset != lastBlockIdx) {
                     lastBlockIdx = blockOffset;
                     const uint8_t* blk = texPtr + blockOffset;
-                    // First 8 bytes are 16 4-bit alpha nibbles
-                    for (int i = 0; i < 16; ++i) {
-                        uint8_t nib = (i & 1) ? (blk[i / 2] >> 4) : (blk[i / 2] & 0x0F);
-                        cachedAlpha[i] = (nib << 4) | nib;
+                    // First 8 bytes are 16 4-bit alpha nibbles in 3DS Morton (Z-curve) order
+                    for (int by = 0; by < 4; ++by) {
+                        for (int bx = 0; bx < 4; ++bx) {
+                            uint32_t m = (bx & 1) | ((by & 1) << 1) | ((bx & 2) << 1) | ((by & 2) << 2);
+                            uint8_t nib = (m & 1) ? (blk[m / 2] >> 4) : (blk[m / 2] & 0x0F);
+                            cachedAlpha[by * 4 + bx] = (nib << 4) | nib;
+                        }
                     }
                     // Next 8 bytes are ETC1 block with reversed byte endianness on 3DS
                     uint8_t rev[8];
@@ -230,7 +233,7 @@ void PicaCommandProcessor::ExecuteDrawElements(HorizonOS* os) {
                 uint32_t tileY = (uint32_t)ty / 8;
                 uint32_t subBx = ((uint32_t)tx & 7U) / 4;
                 uint32_t subBy = ((uint32_t)ty & 7U) / 4;
-                uint32_t subBlockIdx = subBx * 2 + subBy;
+                uint32_t subBlockIdx = (subBx & 1U) | ((subBy & 1U) << 1U);
                 uint32_t blockOffset = (tileX * tilesPerCol + tileY) * 32 + subBlockIdx * 8;
 
                 if (blockOffset != lastBlockIdx) {
@@ -299,6 +302,12 @@ void PicaCommandProcessor::ExecuteDrawElements(HorizonOS* os) {
                 float sx0 = cx + x0, sy0 = cy - y0;
                 float sx1 = cx + x1, sy1 = cy - y1;
                 float sx2 = cx + x2, sy2 = cy - y2;
+
+                static int s_triLog = 0;
+                if (++s_triLog % 60 == 1) {
+                    LOGI("DrawElements Tri: colorBuf=0x%08X isBottom=%d pos0=(%.1f, %.1f) pos1=(%.1f, %.1f) pos2=(%.1f, %.1f) uv0=(%.1f, %.1f) uv1=(%.1f, %.1f)",
+                         colorBufPhys, isBottom, x0, y0, x1, y1, x2, y2, u0, v0, u1, v1);
+                }
 
                 float area = edge(sx0, sy0, sx1, sy1, sx2, sy2);
                 if (std::abs(area) < 0.0001f) continue;
