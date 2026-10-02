@@ -52,10 +52,10 @@ Color DecodeColor(uint32_t format, const uint8_t* source) {
     const uint16_t packed = static_cast<uint16_t>(source[0]) |
                             (static_cast<uint16_t>(source[1]) << 8U);
     switch (format) {
-    case 0: // RGBA8
-        return {source[0], source[1], source[2], source[3]};
-    case 1: // RGB8
-        return {source[0], source[1], source[2], 0xFFU};
+    case 0: // RGBA8 (3DS memory order: [0]=A, [1]=B, [2]=G, [3]=R)
+        return {source[3], source[2], source[1], source[0]};
+    case 1: // RGB8 / BGR8_OES (3DS memory order: [0]=B, [1]=G, [2]=R)
+        return {source[2], source[1], source[0], 0xFFU};
     case 2: // RGB565
         return {Expand5((packed >> 11U) & 0x1FU),
                 Expand6((packed >> 5U) & 0x3FU),
@@ -77,16 +77,16 @@ Color DecodeColor(uint32_t format, const uint8_t* source) {
 void EncodeColor(uint32_t format, const Color& color, uint8_t* target) {
     uint16_t packed = 0;
     switch (format) {
-    case 0:
-        target[0] = color.R;
-        target[1] = color.G;
-        target[2] = color.B;
-        target[3] = color.A;
+    case 0: // RGBA8 (3DS memory order: [0]=A, [1]=B, [2]=G, [3]=R)
+        target[0] = color.A;
+        target[1] = color.B;
+        target[2] = color.G;
+        target[3] = color.R;
         return;
-    case 1:
-        target[0] = color.R;
+    case 1: // RGB8 / BGR8_OES (3DS memory order: [0]=B, [1]=G, [2]=R)
+        target[0] = color.B;
         target[1] = color.G;
-        target[2] = color.B;
+        target[2] = color.R;
         return;
     case 2:
         packed = static_cast<uint16_t>((color.R >> 3U) << 11U) |
@@ -146,17 +146,10 @@ bool ExecutePicaMemoryFill(const PicaMemoryFill& fill, HorizonOS* os, std::strin
                                           ? 3U
                                           : 2U);
     std::array<uint8_t, 4> value{};
-    if (elementSize == 4) {
-        value[0] = static_cast<uint8_t>(fill.value >> 24U);
-        value[1] = static_cast<uint8_t>(fill.value >> 16U);
-        value[2] = static_cast<uint8_t>(fill.value >> 8U);
-        value[3] = static_cast<uint8_t>(fill.value);
-    } else {
-        value[0] = static_cast<uint8_t>(fill.value);
-        value[1] = static_cast<uint8_t>(fill.value >> 8U);
-        value[2] = static_cast<uint8_t>(fill.value >> 16U);
-        value[3] = static_cast<uint8_t>(fill.value >> 24U);
-    }
+    value[0] = static_cast<uint8_t>(fill.value & 0xFFU);
+    value[1] = static_cast<uint8_t>((fill.value >> 8U) & 0xFFU);
+    value[2] = static_cast<uint8_t>((fill.value >> 16U) & 0xFFU);
+    value[3] = static_cast<uint8_t>((fill.value >> 24U) & 0xFFU);
     
     std::vector<uint8_t> bytes(size);
     for (size_t offset = 0; offset < bytes.size(); ++offset) {

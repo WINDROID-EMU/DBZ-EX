@@ -189,10 +189,8 @@ void PicaCommandProcessor::ExecuteDrawElements(HorizonOS* os) {
         uint32_t tilesPerCol = (texH + 7) / 8;
 
         auto sampleTex = [&](int tx, int ty, uint8_t& outR, uint8_t& outG, uint8_t& outB, uint8_t& outA) {
-            if (tx < 0 || tx >= (int)texW || ty < 0 || ty >= (int)texH) {
-                outR = outG = outB = outA = 0;
-                return;
-            }
+            tx = std::clamp(tx, 0, (int)texW - 1);
+            ty = std::clamp(ty, 0, (int)texH - 1);
             if (texType == 13) { // GPU_ETC1A4 (16 bytes per 4x4 block)
                 uint32_t tileX = (uint32_t)tx / 8;
                 uint32_t tileY = (uint32_t)ty / 8;
@@ -258,10 +256,10 @@ void PicaCommandProcessor::ExecuteDrawElements(HorizonOS* os) {
                 uint32_t xMod = (uint32_t)tx & 7U;
                 uint32_t yMod = (uint32_t)ty & 7U;
                 uint32_t texOff = (xLut[xMod] + yLut[yMod] + ((uint32_t)tx & ~7U) * 8U) * 4 + ((uint32_t)ty & ~7U) * texW * 4;
-                outR = texPtr[texOff + 0];
-                outG = texPtr[texOff + 1];
-                outB = texPtr[texOff + 2];
-                outA = texPtr[texOff + 3];
+                outA = texPtr[texOff + 0]; // 3DS RGBA8 layout: [0]=A, [1]=B, [2]=G, [3]=R
+                outB = texPtr[texOff + 1];
+                outG = texPtr[texOff + 2];
+                outR = texPtr[texOff + 3];
             }
         };
 
@@ -396,16 +394,17 @@ void PicaCommandProcessor::ExecuteDrawElements(HorizonOS* os) {
                                 uint32_t fbOff = (xLut[xMod] + yLut[yMod] + ((uint32_t)pX & ~7U) * 8U) * 4 + ((uint32_t)pY & ~7U) * fbW * 4;
                                 if (fbOff + 3 < fbW * fbH * 4) {
                                     if (finalA >= 250) {
-                                        fbPtr[fbOff + 0] = finalR;
-                                        fbPtr[fbOff + 1] = finalG;
-                                        fbPtr[fbOff + 2] = finalB;
-                                        fbPtr[fbOff + 3] = 0xFF;
+                                        // Native 3DS RGBA8 framebuffer order is [0]=A, [1]=B, [2]=G, [3]=R
+                                        fbPtr[fbOff + 0] = finalA;
+                                        fbPtr[fbOff + 1] = finalB;
+                                        fbPtr[fbOff + 2] = finalG;
+                                        fbPtr[fbOff + 3] = finalR;
                                     } else {
                                         uint32_t invA = 255 - finalA;
-                                        fbPtr[fbOff + 0] = (finalR * finalA + fbPtr[fbOff + 0] * invA) / 255;
-                                        fbPtr[fbOff + 1] = (finalG * finalA + fbPtr[fbOff + 1] * invA) / 255;
-                                        fbPtr[fbOff + 2] = (finalB * finalA + fbPtr[fbOff + 2] * invA) / 255;
-                                        fbPtr[fbOff + 3] = 0xFF;
+                                        fbPtr[fbOff + 0] = finalA;
+                                        fbPtr[fbOff + 1] = (finalB * finalA + fbPtr[fbOff + 1] * invA) / 255;
+                                        fbPtr[fbOff + 2] = (finalG * finalA + fbPtr[fbOff + 2] * invA) / 255;
+                                        fbPtr[fbOff + 3] = (finalR * finalA + fbPtr[fbOff + 3] * invA) / 255;
                                     }
                                 }
                             }

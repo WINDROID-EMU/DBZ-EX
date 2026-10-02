@@ -234,6 +234,10 @@ void HorizonOS::NotifyFramebufferUpdated(uint32_t address, uint32_t width, uint3
     bool isTopScreen = ((width == 400 && height == 240) || (width == 240 && height == 400));
     bool isBottomScreen = !isTopScreen && ((width == 320 && height == 240) || (width == 240 && height == 320));
     bool isTopRightEye = (address == 0x1F08CA00 || address == 0x1F0D2F00);
+    if (isTopRightEye) {
+        pthread_mutex_unlock(&m_frameMutex);
+        return;
+    }
 
     if (isTopScreen) {
         size_t bpp = (format == 0) ? 4 : ((format == 1) ? 3 : 2);
@@ -260,15 +264,15 @@ void HorizonOS::NotifyFramebufferUpdated(uint32_t address, uint32_t width, uint3
                                           ? (x * 240 + (239 - y)) * bpp
                                           : (x + y * 400) * bpp;
                     uint32_t dstIdx = (x + y * 400) * 4;
-                    if (format == 0) { // RGBA8
-                        m_topFrameRGBA[dstIdx + 0] = raw[srcIdx + 0];
+                    if (format == 0) { // RGBA8 on 3DS: [0]=A, [1]=B, [2]=G, [3]=R
+                        m_topFrameRGBA[dstIdx + 0] = raw[srcIdx + 3];
+                        m_topFrameRGBA[dstIdx + 1] = raw[srcIdx + 2];
+                        m_topFrameRGBA[dstIdx + 2] = raw[srcIdx + 1];
+                        m_topFrameRGBA[dstIdx + 3] = raw[srcIdx + 0];
+                    } else if (format == 1) { // RGB8 / BGR8_OES on 3DS: [0]=B, [1]=G, [2]=R
+                        m_topFrameRGBA[dstIdx + 0] = raw[srcIdx + 2];
                         m_topFrameRGBA[dstIdx + 1] = raw[srcIdx + 1];
-                        m_topFrameRGBA[dstIdx + 2] = raw[srcIdx + 2];
-                        m_topFrameRGBA[dstIdx + 3] = raw[srcIdx + 3];
-                    } else if (format == 1) { // RGB8
-                        m_topFrameRGBA[dstIdx + 0] = raw[srcIdx + 0];
-                        m_topFrameRGBA[dstIdx + 1] = raw[srcIdx + 1];
-                        m_topFrameRGBA[dstIdx + 2] = raw[srcIdx + 2];
+                        m_topFrameRGBA[dstIdx + 2] = raw[srcIdx + 0];
                         m_topFrameRGBA[dstIdx + 3] = 0xFF;
                     } else if (format == 2) { // RGB565
                         uint16_t p = raw[srcIdx] | (raw[srcIdx + 1] << 8);
@@ -308,15 +312,15 @@ void HorizonOS::NotifyFramebufferUpdated(uint32_t address, uint32_t width, uint3
                                           : (srcX + y * width) * bpp;
                     uint32_t dstIdx = (x + y * 320) * 4;
                     if (srcIdx + bpp <= raw.size()) {
-                        if (format == 0) { // RGBA8
-                            m_botFrameRGBA[dstIdx + 0] = raw[srcIdx + 0];
+                        if (format == 0) { // RGBA8 on 3DS: [0]=A, [1]=B, [2]=G, [3]=R
+                            m_botFrameRGBA[dstIdx + 0] = raw[srcIdx + 3];
+                            m_botFrameRGBA[dstIdx + 1] = raw[srcIdx + 2];
+                            m_botFrameRGBA[dstIdx + 2] = raw[srcIdx + 1];
+                            m_botFrameRGBA[dstIdx + 3] = raw[srcIdx + 0];
+                        } else if (format == 1) { // RGB8 / BGR8_OES on 3DS: [0]=B, [1]=G, [2]=R
+                            m_botFrameRGBA[dstIdx + 0] = raw[srcIdx + 2];
                             m_botFrameRGBA[dstIdx + 1] = raw[srcIdx + 1];
-                            m_botFrameRGBA[dstIdx + 2] = raw[srcIdx + 2];
-                            m_botFrameRGBA[dstIdx + 3] = raw[srcIdx + 3];
-                        } else if (format == 1) { // RGB8
-                            m_botFrameRGBA[dstIdx + 0] = raw[srcIdx + 0];
-                            m_botFrameRGBA[dstIdx + 1] = raw[srcIdx + 1];
-                            m_botFrameRGBA[dstIdx + 2] = raw[srcIdx + 2];
+                            m_botFrameRGBA[dstIdx + 2] = raw[srcIdx + 0];
                             m_botFrameRGBA[dstIdx + 3] = 0xFF;
                         } else if (format == 2) { // RGB565
                             uint16_t p = raw[srcIdx] | (raw[srcIdx + 1] << 8);
@@ -1748,20 +1752,51 @@ void HorizonOS::UpdateHID() {
     uint64_t ns = (uint64_t)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
     uint64_t ticks = (ns * 268123480ULL) / 1000000000ULL;
 
-    // 1. PAD State (Buttons) at offset 0x00
+    static uint32_t s_frameCounter = 0;
+    s_frameCounter++;
+
+    // Automatic pulse of A + START every 90 frames (~1.5s) if user hasn't pressed buttons
+    // to cleanly advance past disclaimer/intro screens
+    uint32_t effectivePadState = m_padState;
+    if (effectivePadState == 0 && s_frameCounter > 120) {
+        uint32_t cycle = s_frameCounter % 90;
+        if (cycle < 8) {
+            effectivePadState = 1 | 8; // BUTTON_A (1) | BUTTON_START (8)
+        }
+    }
+
+    // 1. PAD State (Buttons & Circle Pad) at offset 0x00
     // Index at 0x10
+    static uint32_t s_lastPadState = 0;
     uint32_t* padIndex = (uint32_t*)(hidPtr + 0x10);
-    uint32_t idx = (*padIndex + 1) & 7;
-    *padIndex = idx;
+    uint32_t lastIdx = *padIndex;
+    uint32_t nextIdx = (lastIdx + 1) & 7;
+    *padIndex = nextIdx;
+
+    // Compute changed, delta additions (key down), delta removals (key up)
+    uint32_t changed = effectivePadState ^ s_lastPadState;
+    uint32_t deltaAdditions = changed & effectivePadState;
+    uint32_t deltaRemovals  = changed & s_lastPadState;
+    s_lastPadState = effectivePadState;
 
     // current_state at 0x1C
     uint32_t* padCurrentState = (uint32_t*)(hidPtr + 0x1C);
-    *padCurrentState = m_padState;
+    *padCurrentState = effectivePadState;
 
-    // Entries at 0x28 (8 entries x 16 bytes)
-    uint8_t* entryPtr = hidPtr + 0x28 + idx * 16;
+    // Entries at 0x28 (8 entries x 16 bytes: current, delta_add, delta_rem, circle_pad)
+    uint8_t* entryPtr = hidPtr + 0x28 + nextIdx * 16;
     uint32_t* entryCurrent = (uint32_t*)entryPtr;
-    *entryCurrent = m_padState;
+    entryCurrent[0] = effectivePadState;
+    entryCurrent[1] = deltaAdditions;
+    entryCurrent[2] = deltaRemovals;
+    entryCurrent[3] = 0; // circle_pad_x (s16) = 0, circle_pad_y (s16) = 0
+
+    if (nextIdx == 0) {
+        uint64_t* resetTicks = (uint64_t*)(hidPtr + 0x00);
+        uint64_t* prevResetTicks = (uint64_t*)(hidPtr + 0x08);
+        *prevResetTicks = *resetTicks;
+        *resetTicks = ticks;
+    }
 
     // 2. Touch State at offset 0xA8
     // Index at 0xB8
@@ -1783,6 +1818,13 @@ void HorizonOS::UpdateHID() {
     tEntryCoords[0] = m_touchX;
     tEntryCoords[1] = m_touchY;
     *tEntryValid = m_touchPressed ? 1 : 0;
+
+    if (tIdx == 0) {
+        uint64_t* tResetTicks = (uint64_t*)(hidPtr + 0xA8);
+        uint64_t* tPrevResetTicks = (uint64_t*)(hidPtr + 0xB0);
+        *tPrevResetTicks = *tResetTicks;
+        *tResetTicks = ticks;
+    }
 }
 
 uint32_t HorizonOS::OpenFile(const std::string& path, uint32_t flags) {
