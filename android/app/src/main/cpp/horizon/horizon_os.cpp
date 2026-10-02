@@ -241,8 +241,8 @@ void HorizonOS::NotifyFramebufferUpdated(uint32_t address, uint32_t width, uint3
             for (size_t i = 0; i < raw.size(); i += 8) {
                 if (raw[i] != 0) nonZero++;
             }
-            // If this is the 3D right eye buffer and it's blank (2D mode), do NOT overwrite the left eye image!
-            if (isTopRightEye && nonZero < 50) {
+            // If this buffer is blank (blank double-buffer or blank 3D right eye in 2D mode), do NOT overwrite the active image!
+            if (nonZero < 50) {
                 pthread_mutex_unlock(&m_frameMutex);
                 return;
             }
@@ -285,6 +285,10 @@ void HorizonOS::NotifyFramebufferUpdated(uint32_t address, uint32_t width, uint3
             uint32_t nonZero = 0;
             for (size_t i = 0; i < raw.size(); i += 8) {
                 if (raw[i] != 0) nonZero++;
+            }
+            if (nonZero < 50) {
+                pthread_mutex_unlock(&m_frameMutex);
+                return;
             }
             static int s_botLog = 0;
             if (++s_botLog % 30 == 0 || nonZero > 100) {
@@ -1126,6 +1130,15 @@ void HorizonOS::RunMainThread(uint32_t entryPoint) {
         struct timespec ts;
         clock_gettime(CLOCK_MONOTONIC, &ts);
         uint64_t now_ms = (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)ts.tv_nsec / 1000000ULL;
+
+        static uint64_t last_vblank_ms = 0;
+        if (now_ms - last_vblank_ms >= 16) {
+            last_vblank_ms = now_ms;
+            QueueGspInterrupt(2);  // GSP PDC0 (Top Screen VBlank)
+            QueueGspInterrupt(3);  // GSP PDC1 (Bottom Screen VBlank)
+            SignalDspInterrupts(); // DSP audio frame
+            UpdateHID();           // 3DS Touch & Pad inputs
+        }
 
         bool any_ran = false;
 

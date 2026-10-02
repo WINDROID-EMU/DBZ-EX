@@ -219,7 +219,7 @@ void PicaCommandProcessor::ExecuteDrawElements(HorizonOS* os) {
 
                 uint32_t px = (uint32_t)tx % 4;
                 uint32_t py = (uint32_t)ty % 4;
-                uint32_t pIdx = px * 4 + py; // Column-major within 4x4 block
+                uint32_t pIdx = py * 4 + px; // Row-major within 4x4 block from rg_etc1
                 outA = cachedAlpha[pIdx];
                 uint32_t col = cachedRGBA[pIdx];
                 outR = col & 0xFF;
@@ -245,7 +245,7 @@ void PicaCommandProcessor::ExecuteDrawElements(HorizonOS* os) {
 
                 uint32_t px = (uint32_t)tx % 4;
                 uint32_t py = (uint32_t)ty % 4;
-                uint32_t pIdx = px * 4 + py;
+                uint32_t pIdx = py * 4 + px;
                 outA = 0xFF;
                 uint32_t col = cachedRGBA[pIdx];
                 outR = col & 0xFF;

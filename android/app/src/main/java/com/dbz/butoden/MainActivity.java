@@ -65,10 +65,33 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             boolean isPressed = (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_MOVE);
             float viewW = v.getWidth() > 0 ? v.getWidth() : 1.0f;
             float viewH = v.getHeight() > 0 ? v.getHeight() : 1.0f;
-            // Map coordinates to 3DS Bottom Touch Screen (320x240)
-            float tX = (event.getX() / viewW) * 320.0f;
-            float tY = (event.getY() / viewH) * 240.0f;
-            nativeTouch(isPressed, tX, tY);
+
+            // Calculate exact bottom screen viewport on right half (matching PicaGLES)
+            float halfW = viewW / 2.0f;
+            float targetRatioTop = 400.0f / 240.0f;
+            float topH = halfW / targetRatioTop;
+            if (topH > viewH) {
+                topH = viewH;
+            }
+            float botH = topH;
+            float botW = botH * (320.0f / 240.0f);
+            if (botW > halfW) {
+                botW = halfW;
+                botH = botW * (240.0f / 320.0f);
+            }
+            float botX = halfW + (halfW - botW) / 2.0f;
+            float botY = (viewH - botH) / 2.0f;
+
+            float touchX = event.getX();
+            float touchY = event.getY();
+
+            if (touchX >= botX && touchX <= botX + botW && touchY >= botY && touchY <= botY + botH) {
+                float tX = ((touchX - botX) / botW) * 320.0f;
+                float tY = ((touchY - botY) / botH) * 240.0f;
+                nativeTouch(isPressed, tX, tY);
+            } else if (!isPressed) {
+                nativeTouch(false, 0, 0);
+            }
 
             // Also pulse A + START on touch to skip intro screens easily
             if (action == MotionEvent.ACTION_DOWN) {

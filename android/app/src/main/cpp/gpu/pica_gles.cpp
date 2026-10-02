@@ -168,7 +168,20 @@ void PicaGLES::RenderFrame(const uint8_t* topPixels, const uint8_t* botPixels) {
     // Render Top Screen in viewport (e.g. Left/Top half or Main Screen)
     // Landscape Mode: Top Screen centered on Left / Main, Bottom Screen on Right
     int halfW = m_windowWidth / 2;
-    glViewport(0, 0, halfW, m_windowHeight);
+
+    // Top Screen: 400x240 (5:3 aspect ratio)
+    float targetRatioTop = 400.0f / 240.0f;
+    int topW = halfW;
+    int topH = (int)(halfW / targetRatioTop);
+    if (topH > m_windowHeight) {
+        topH = m_windowHeight;
+        topW = (int)(m_windowHeight * targetRatioTop);
+    }
+    int topX = (halfW - topW) / 2;
+    int topY = (m_windowHeight - topH) / 2;
+
+    // Render Top Screen in viewport
+    glViewport(topX, topY, topW, topH);
     glBindTexture(GL_TEXTURE_2D, m_topTexture);
     glUniform1i(m_uScreenTexture, 0);
 
@@ -181,8 +194,19 @@ void PicaGLES::RenderFrame(const uint8_t* topPixels, const uint8_t* botPixels) {
     glUniformMatrix4fv(m_uTransform, 1, GL_FALSE, identity);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
+    // Bottom Screen: 320x240 (4:3 aspect ratio)
+    // Match height with top screen for a clean, aligned dual-screen layout
+    int botH = topH;
+    int botW = (int)(botH * (320.0f / 240.0f));
+    if (botW > halfW) {
+        botW = halfW;
+        botH = (int)(botW * (240.0f / 320.0f));
+    }
+    int botX = halfW + (halfW - botW) / 2;
+    int botY = (m_windowHeight - botH) / 2;
+
     // Render Bottom Screen in viewport
-    glViewport(halfW, 0, halfW, m_windowHeight);
+    glViewport(botX, botY, botW, botH);
     glBindTexture(GL_TEXTURE_2D, m_botTexture);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
