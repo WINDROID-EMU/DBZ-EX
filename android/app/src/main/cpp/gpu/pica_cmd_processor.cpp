@@ -276,15 +276,44 @@ void PicaCommandProcessor::ExecuteDrawElements(HorizonOS* os) {
         const uint8_t* idxPtr = os ? (const uint8_t*)os->GetPointer(idxAddr) : nullptr;
         bool is16Bit = (idxBufConfig & (1U << 31)) != 0;
 
+        uint32_t b1Off = m_regs[0x0206];
+        uint32_t stride0 = (m_regs[GPUREG_ATTRIBBUFFER0_CONFIG2] >> 16) & 0xFF;
+        uint32_t stride1 = (m_regs[0x0208] >> 16) & 0xFF;
+        uint32_t stride2 = (m_regs[0x020B] >> 16) & 0xFF;
+
+        static int s_attrLog = 0;
+        if (++s_attrLog % 60 == 1) {
+            LOGI("DrawElements attribs: b0=0x%X(str=%u) b1=0x%X(str=%u) b2=0x%X(str=%u) fmtLow=0x%08X fmtHigh=0x%08X texenv0_col=0x%08X blend_col=0x%08X col_op=0x%08X depth_mask=0x%08X",
+                 b0Off, stride0, b1Off, stride1, b2Off, stride2,
+                 m_regs[GPUREG_ATTRIBBUFFERS_FORMAT_LOW], m_regs[GPUREG_ATTRIBBUFFERS_FORMAT_HIGH],
+                 m_regs[0x00C2], m_regs[0x0103], m_regs[0x0100], m_regs[0x0107]);
+        }
+
         float L_W = isBottom ? 320.0f : 400.0f;
         float L_H = 240.0f;
         float cx = L_W / 2.0f;
         float cy = L_H / 2.0f;
 
+        const float* colPtr = (os && b1Off > 0 && stride1 >= 16) ? (const float*)os->GetPointer(bufBase + b1Off) : nullptr;
+
         if (posPtr && uvPtr && idxPtr && numVertices >= 3) {
             auto edge = [](float ax, float ay, float bx, float by, float px, float py) {
                 return (px - ax) * (by - ay) - (py - ay) * (bx - ax);
             };
+
+            // Detect whether coordinates are in direct screen-space [0..W, 0..-H] or centered [-W/2..W/2, -H/2..H/2]
+            float minX = 1e9f, maxX = -1e9f;
+            float minY = 1e9f, maxY = -1e9f;
+            for (uint32_t i = 0; i < numVertices; ++i) {
+                uint32_t idx = is16Bit ? ((const uint16_t*)idxPtr)[i] : idxPtr[i];
+                float vx = posPtr[idx * 3 + 0];
+                float vy = posPtr[idx * 3 + 1];
+                if (vx < minX) minX = vx;
+                if (vx > maxX) maxX = vx;
+                if (vy < minY) minY = vy;
+                if (vy > maxY) maxY = vy;
+            }
+            bool isScreenSpace = (minX >= -5.0f && maxY <= 1.0f) || (maxX > 210.0f);
 
             for (uint32_t i = 0; i + 2 < numVertices; i += 3) {
                 uint32_t i0 = is16Bit ? ((const uint16_t*)idxPtr)[i + 0] : idxPtr[i + 0];
@@ -299,14 +328,30 @@ void PicaCommandProcessor::ExecuteDrawElements(HorizonOS* os) {
                 float u1 = uvPtr[i1 * 2 + 0] * (float)texW, v1 = uvPtr[i1 * 2 + 1] * (float)texH;
                 float u2 = uvPtr[i2 * 2 + 0] * (float)texW, v2 = uvPtr[i2 * 2 + 1] * (float)texH;
 
-                float sx0 = cx + x0, sy0 = cy - y0;
-                float sx1 = cx + x1, sy1 = cy - y1;
-                float sx2 = cx + x2, sy2 = cy - y2;
+                float cr0 = 1.0f, cg0 = 1.0f, cb0 = 1.0f, ca0 = 1.0f;
+                float cr1 = 1.0f, cg1 = 1.0f, cb1 = 1.0f, ca1 = 1.0f;
+                float cr2 = 1.0f, cg2 = 1.0f, cb2 = 1.0f, ca2 = 1.0f;
+                if (colPtr) {
+                    cr0 = colPtr[i0 * 4 + 0]; cg0 = colPtr[i0 * 4 + 1]; cb0 = colPtr[i0 * 4 + 2]; ca0 = colPtr[i0 * 4 + 3];
+                    cr1 = colPtr[i1 * 4 + 0]; cg1 = colPtr[i1 * 4 + 1]; cb1 = colPtr[i1 * 4 + 2]; ca1 = colPtr[i1 * 4 + 3];
+                    cr2 = colPtr[i2 * 4 + 0]; cg2 = colPtr[i2 * 4 + 1]; cb2 = colPtr[i2 * 4 + 2]; ca2 = colPtr[i2 * 4 + 3];
+                }
+
+                float sx0, sy0, sx1, sy1, sx2, sy2;
+                if (isScreenSpace) {
+                    sx0 = x0; sy0 = (y0 < 0) ? -y0 : y0;
+                    sx1 = x1; sy1 = (y1 < 0) ? -y1 : y1;
+                    sx2 = x2; sy2 = (y2 < 0) ? -y2 : y2;
+                } else {
+                    sx0 = cx + x0; sy0 = cy - y0;
+                    sx1 = cx + x1; sy1 = cy - y1;
+                    sx2 = cx + x2; sy2 = cy - y2;
+                }
 
                 static int s_triLog = 0;
                 if (++s_triLog % 60 == 1) {
-                    LOGI("DrawElements Tri: colorBuf=0x%08X isBottom=%d pos0=(%.1f, %.1f) pos1=(%.1f, %.1f) pos2=(%.1f, %.1f) uv0=(%.1f, %.1f) uv1=(%.1f, %.1f)",
-                         colorBufPhys, isBottom, x0, y0, x1, y1, x2, y2, u0, v0, u1, v1);
+                    LOGI("DrawElements Tri: colorBuf=0x%08X isBottom=%d scrSpace=%d pos0=(%.1f, %.1f) pos1=(%.1f, %.1f) pos2=(%.1f, %.1f) uv0=(%.1f, %.1f) uv1=(%.1f, %.1f) col0=(%.2f, %.2f, %.2f, %.2f)",
+                         colorBufPhys, isBottom, isScreenSpace, x0, y0, x1, y1, x2, y2, u0, v0, u1, v1, cr0, cg0, cb0, ca0);
                 }
 
                 float area = edge(sx0, sy0, sx1, sy1, sx2, sy2);
@@ -335,21 +380,31 @@ void PicaCommandProcessor::ExecuteDrawElements(HorizonOS* os) {
                             uint8_t r, g, b, a;
                             sampleTex((int)std::round(u), (int)std::round(v), r, g, b, a);
 
-                            if (a > 4) {
+                            float cr = w0 * cr0 + w1 * cr1 + w2 * cr2;
+                            float cg = w0 * cg0 + w1 * cg1 + w2 * cg2;
+                            float cb = w0 * cb0 + w1 * cb1 + w2 * cb2;
+                            float ca = w0 * ca0 + w1 * ca1 + w2 * ca2;
+
+                            uint8_t finalR = (uint8_t)std::clamp((float)r * cr, 0.0f, 255.0f);
+                            uint8_t finalG = (uint8_t)std::clamp((float)g * cg, 0.0f, 255.0f);
+                            uint8_t finalB = (uint8_t)std::clamp((float)b * cb, 0.0f, 255.0f);
+                            uint8_t finalA = (uint8_t)std::clamp((float)a * ca, 0.0f, 255.0f);
+
+                            if (finalA > 4) {
                                 uint32_t xMod = (uint32_t)pX & 7U;
                                 uint32_t yMod = (uint32_t)pY & 7U;
                                 uint32_t fbOff = (xLut[xMod] + yLut[yMod] + ((uint32_t)pX & ~7U) * 8U) * 4 + ((uint32_t)pY & ~7U) * fbW * 4;
                                 if (fbOff + 3 < fbW * fbH * 4) {
-                                    if (a >= 250) {
-                                        fbPtr[fbOff + 0] = r;
-                                        fbPtr[fbOff + 1] = g;
-                                        fbPtr[fbOff + 2] = b;
+                                    if (finalA >= 250) {
+                                        fbPtr[fbOff + 0] = finalR;
+                                        fbPtr[fbOff + 1] = finalG;
+                                        fbPtr[fbOff + 2] = finalB;
                                         fbPtr[fbOff + 3] = 0xFF;
                                     } else {
-                                        uint32_t invA = 255 - a;
-                                        fbPtr[fbOff + 0] = (r * a + fbPtr[fbOff + 0] * invA) / 255;
-                                        fbPtr[fbOff + 1] = (g * a + fbPtr[fbOff + 1] * invA) / 255;
-                                        fbPtr[fbOff + 2] = (b * a + fbPtr[fbOff + 2] * invA) / 255;
+                                        uint32_t invA = 255 - finalA;
+                                        fbPtr[fbOff + 0] = (finalR * finalA + fbPtr[fbOff + 0] * invA) / 255;
+                                        fbPtr[fbOff + 1] = (finalG * finalA + fbPtr[fbOff + 1] * invA) / 255;
+                                        fbPtr[fbOff + 2] = (finalB * finalA + fbPtr[fbOff + 2] * invA) / 255;
                                         fbPtr[fbOff + 3] = 0xFF;
                                     }
                                 }

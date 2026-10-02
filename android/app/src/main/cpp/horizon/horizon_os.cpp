@@ -348,7 +348,7 @@ void HorizonOS::SignalEvent(uint32_t handle) {
         it->second->signaled = true;
         pthread_cond_broadcast(&it->second->cond);
         pthread_mutex_unlock(&it->second->mutex);
-        if (handle != 0x127 && handle != 0x128 && handle != 0x12E) {
+        if (handle != 0x127 && handle != 0x128 && handle != 0x129 && handle != 0x12E) {
             LOGI("SignalEvent: handle 0x%X ('%s')", handle, it->second->name.c_str());
         }
     }
@@ -720,8 +720,8 @@ void HorizonOS::HandleSVC(Context* ctx) {
         // SetTimer (0x1B)
         case 0x1B: {
             uint32_t handle = ctx->r[0];
-            int64_t initial = ((int64_t)ctx->r[2] << 32) | (uint32_t)ctx->r[1];
-            int64_t interval = ((int64_t)ctx->r[4] << 32) | (uint32_t)ctx->r[3];
+            int64_t initial = ((int64_t)(int32_t)ctx->r[3] << 32) | (uint32_t)ctx->r[2];
+            int64_t interval = ((int64_t)(int32_t)ctx->r[4] << 32) | (uint32_t)ctx->r[1];
             auto it = m_events.find(handle);
             if (it != m_events.end()) {
                 pthread_mutex_lock(&it->second->mutex);
@@ -730,10 +730,21 @@ void HorizonOS::HandleSVC(Context* ctx) {
                 struct timespec ts;
                 clock_gettime(CLOCK_MONOTONIC, &ts);
                 uint64_t now_ns = (uint64_t)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
-                uint64_t delay_ns = (initial < 0) ? (uint64_t)(-initial) : (uint64_t)initial;
+                uint64_t delay_ns = 0;
+                if (initial < 0) {
+                    delay_ns = (uint64_t)(-initial);
+                } else if (initial > 0) {
+                    if ((uint64_t)initial > now_ns) {
+                        delay_ns = (uint64_t)initial - now_ns;
+                    } else {
+                        delay_ns = 0;
+                    }
+                }
                 it->second->next_fire_ns = now_ns + delay_ns;
                 it->second->signaled = (delay_ns == 0);
                 pthread_mutex_unlock(&it->second->mutex);
+                LOGI("SetTimer: handle=0x%X, initial=%lld ns (delay=%llu ms), interval=%lld ns, signaled=%d",
+                     handle, (long long)initial, (unsigned long long)(delay_ns / 1000000ULL), (long long)interval, it->second->signaled);
             }
             ctx->r[0] = 0;
             break;
@@ -808,16 +819,16 @@ void HorizonOS::HandleSVC(Context* ctx) {
             int64_t ns = -1LL;
 
             if (type == 3 || type == 4) {
-                uint32_t* spPtr = (uint32_t*)GetPointer(ctx->r[13]);
-                if (spPtr) {
-                    ns = ((int64_t)spPtr[1] << 32) | spPtr[0];
-                }
+                ns = ((int64_t)(int32_t)ctx->r[5] << 32) | (uint32_t)ctx->r[4];
             }
 
             int32_t* curValPtr = (int32_t*)GetPointer(addr);
             int32_t curVal = curValPtr ? *curValPtr : 0;
-            LOGI("ArbitrateAddress: caller=0x%08X (thread=0x%08X), addr=0x%08X, type=%u, value=%d, *addr=%d, ns=%lld",
-                 ctx->r[15], m_currentThread ? m_currentThread->entry_point : 0, addr, type, value, curVal, (long long)ns);
+            static int s_arbLog = 0;
+            if (++s_arbLog % 500 == 1) {
+                LOGI("ArbitrateAddress: caller=0x%08X (thread=0x%08X), addr=0x%08X, type=%u, value=%d, *addr=%d, ns=%lld",
+                     ctx->r[15], m_currentThread ? m_currentThread->entry_point : 0, addr, type, value, curVal, (long long)ns);
+            }
 
             if (type == 0) { // Signal: wake up waiting threads
                 int count = 0;
