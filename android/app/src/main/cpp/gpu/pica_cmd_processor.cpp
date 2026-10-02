@@ -175,8 +175,9 @@ void PicaCommandProcessor::ExecuteDrawElements(HorizonOS* os) {
     static const uint32_t yLut[8] = { 0x00, 0x02, 0x08, 0x0A, 0x20, 0x22, 0x28, 0x2A };
 
     // Native 3DS framebuffers are portrait: 240x400 (top) and 240x320 (bottom)
+    bool isBottom = (colorBufPhys == 0x18177000) || (colorBufPhys >= 0x18200000);
     uint32_t fbW = 240;
-    uint32_t fbH = (colorBufPhys == 0x18119400) ? 320 : 400;
+    uint32_t fbH = isBottom ? 320 : 400;
     uint8_t* fbPtr = os ? os->GetPointer(colorBufPhys) : nullptr;
     uint8_t* texPtr = os ? os->GetPointer(texAddrPhys) : nullptr;
 
@@ -272,7 +273,7 @@ void PicaCommandProcessor::ExecuteDrawElements(HorizonOS* os) {
         const uint8_t* idxPtr = os ? (const uint8_t*)os->GetPointer(idxAddr) : nullptr;
         bool is16Bit = (idxBufConfig & (1U << 31)) != 0;
 
-        float L_W = (colorBufPhys == 0x18119400) ? 320.0f : 400.0f;
+        float L_W = isBottom ? 320.0f : 400.0f;
         float L_H = 240.0f;
         float cx = L_W / 2.0f;
         float cy = L_H / 2.0f;

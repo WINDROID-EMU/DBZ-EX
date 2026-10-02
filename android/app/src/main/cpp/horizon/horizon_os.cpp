@@ -230,6 +230,7 @@ void HorizonOS::NotifyFramebufferUpdated(uint32_t address, uint32_t width, uint3
     
     // Differentiate Top Screen vs Bottom Screen by VRAM address and dimensions
     bool isBottomScreen = (address >= 0x1F200000) || (width == 320 && height == 240) || (width == 240 && height == 320);
+    bool isTopRightEye = (address >= 0x1F08CA00 && address < 0x1F200000);
     bool isTopScreen = !isBottomScreen && ((width == 400 && height == 240) || (width == 240 && height == 400));
 
     if (isTopScreen) {
@@ -239,6 +240,11 @@ void HorizonOS::NotifyFramebufferUpdated(uint32_t address, uint32_t width, uint3
             uint32_t nonZero = 0;
             for (size_t i = 0; i < raw.size(); i += 8) {
                 if (raw[i] != 0) nonZero++;
+            }
+            // If this is the 3D right eye buffer and it's blank (2D mode), do NOT overwrite the left eye image!
+            if (isTopRightEye && nonZero < 50) {
+                pthread_mutex_unlock(&m_frameMutex);
+                return;
             }
             static int s_topLog = 0;
             if (++s_topLog % 30 == 0 || nonZero > 100) {
