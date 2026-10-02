@@ -109,6 +109,7 @@ public:
     // Framebuffer access for PICA200/GSP
     uint8_t* GetTopScreenVRAM();
     uint8_t* GetBottomScreenVRAM();
+    void FlushGpuCommands(class PicaGLES* renderer);
 
     // Input state
     void UpdateHID();

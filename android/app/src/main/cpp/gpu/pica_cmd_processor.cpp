@@ -12,9 +12,46 @@
 
 PicaCommandProcessor::PicaCommandProcessor() {
     memset(m_regs, 0, sizeof(m_regs));
+    pthread_mutex_init(&m_gpuQueueMutex, nullptr);
 }
 
-PicaCommandProcessor::~PicaCommandProcessor() {}
+PicaCommandProcessor::~PicaCommandProcessor() {
+    pthread_mutex_destroy(&m_gpuQueueMutex);
+}
+
+void PicaCommandProcessor::FetchGPUQueue(std::vector<PicaDrawCall>& outQueue) {
+    pthread_mutex_lock(&m_gpuQueueMutex);
+    outQueue.swap(m_gpuQueue);
+    m_gpuQueue.clear();
+    pthread_mutex_unlock(&m_gpuQueueMutex);
+}
+
+bool PicaCommandProcessor::HasQueuedDraws() {
+    pthread_mutex_lock(&m_gpuQueueMutex);
+    bool has = !m_gpuQueue.empty();
+    pthread_mutex_unlock(&m_gpuQueueMutex);
+    return has;
+}
+
+void PicaCommandProcessor::ClearGPUQueue() {
+    pthread_mutex_lock(&m_gpuQueueMutex);
+    m_gpuQueue.clear();
+    pthread_mutex_unlock(&m_gpuQueueMutex);
+}
+
+void PicaCommandProcessor::QueueClear(bool isBottom, float r, float g, float b, float a) {
+    PicaDrawCall dc;
+    dc.isClear = true;
+    dc.isBottom = isBottom;
+    dc.clearColor[0] = r;
+    dc.clearColor[1] = g;
+    dc.clearColor[2] = b;
+    dc.clearColor[3] = a;
+
+    pthread_mutex_lock(&m_gpuQueueMutex);
+    m_gpuQueue.push_back(std::move(dc));
+    pthread_mutex_unlock(&m_gpuQueueMutex);
+}
 
 uint32_t PicaCommandProcessor::GetRegister(uint32_t regId) const {
     if (regId < 0x400) return m_regs[regId];
@@ -109,75 +146,126 @@ void PicaCommandProcessor::ExecuteDrawElements(HorizonOS* os) {
     uint32_t fbFmt = m_regs[GPUREG_COLORBUFFER_FORMAT];
     uint32_t vtxBufPhys = m_regs[GPUREG_ATTRIBBUFFERS_LOC] << 3;
 
+#ifdef DEBUG_PICA_GPU
     static int s_elemLog = 0;
-    if (++s_elemLog % 30 == 1) {
+    if (++s_elemLog % 60 == 1) {
         uint32_t bufLoc = m_regs[GPUREG_ATTRIBBUFFERS_LOC] << 3;
-        uint32_t fmtLow = m_regs[GPUREG_ATTRIBBUFFERS_FORMAT_LOW];
-        uint32_t fmtHigh = m_regs[GPUREG_ATTRIBBUFFERS_FORMAT_HIGH];
         uint32_t buf0Off = m_regs[GPUREG_ATTRIBBUFFER0_OFFSET];
-        uint32_t buf0Cfg1 = m_regs[GPUREG_ATTRIBBUFFER0_CONFIG1];
-        uint32_t buf0Cfg2 = m_regs[GPUREG_ATTRIBBUFFER0_CONFIG2];
-        uint32_t vtxOff = m_regs[GPUREG_VERTEX_OFFSET];
-
-        uint8_t texSample[16] = {0};
-        uint8_t vtxSample[48] = {0};
-        uint8_t idxSample[16] = {0};
-        uint32_t vtxAddr = bufLoc + buf0Off;
         uint32_t idxAddr = bufLoc + (idxBufConfig & 0x0FFFFFFFU);
-        if (os) {
-            os->ReadBytes(texAddrPhys, texSample, 16);
-            os->ReadBytes(vtxAddr, vtxSample, 48);
-            os->ReadBytes(idxAddr, idxSample, 16);
-        }
-        float* fVtx = (float*)vtxSample;
-        uint32_t vpW = m_regs[GPUREG_VIEWPORT_WIDTH];
-        uint32_t vpH = m_regs[GPUREG_VIEWPORT_HEIGHT];
-        uint32_t vpXY = m_regs[GPUREG_VIEWPORT_XY];
         LOGI("ExecuteDrawElements [#%u]: verts=%u, idxBuf=0x%08X (addr=0x%08X), colorBuf=0x%08X, tex=0x%08X (%ux%u, type=%u)",
              m_drawCallCount, numVertices, idxBufConfig, idxAddr, colorBufPhys, texAddrPhys, texW, texH, texType);
-        LOGI("   Viewport: W=0x%X (float=%.2f) H=0x%X (float=%.2f) XY=0x%X",
-             vpW, *(float*)&vpW, vpH, *(float*)&vpH, vpXY);
-        LOGI("   idxSample: %02X %02X %02X %02X %02X %02X %02X %02X",
-             idxSample[0], idxSample[1], idxSample[2], idxSample[3],
-             idxSample[4], idxSample[5], idxSample[6], idxSample[7]);
+    }
+#endif
 
-        uint32_t buf1Off = m_regs[0x0206];
-        uint32_t buf1Cfg2 = m_regs[0x0208];
-        uint8_t buf1Sample[32] = {0};
-        uint32_t buf1Addr = bufLoc + buf1Off;
-        if (os && buf1Off > 0) {
-            os->ReadBytes(buf1Addr, buf1Sample, 32);
-        }
-        float* fVtx1 = (float*)buf1Sample;
-        uint32_t buf2Off = m_regs[0x0209];
-        uint32_t buf2Cfg2 = m_regs[0x020B];
-        uint8_t buf2Sample[32] = {0};
-        uint32_t buf2Addr = bufLoc + buf2Off;
-        if (os && buf2Off > 0) {
-            os->ReadBytes(buf2Addr, buf2Sample, 32);
-        }
-        float* fVtx2 = (float*)buf2Sample;
-        LOGI("   buf0Off=0x%X stride0=%u, buf2Off=0x%X stride2=%u",
-             buf0Off, (buf0Cfg2 >> 16) & 0xFF, buf2Off, (buf2Cfg2 >> 16) & 0xFF);
-        LOGI("   v0: (%.2f, %.2f, %.2f)  v1: (%.2f, %.2f, %.2f)  v2: (%.2f, %.2f, %.2f)  v3: (%.2f, %.2f, %.2f)",
-             fVtx[0], fVtx[1], fVtx[2], fVtx[3], fVtx[4], fVtx[5], fVtx[6], fVtx[7], fVtx[8], fVtx[9], fVtx[10], fVtx[11]);
-        LOGI("   uv0: (%.3f, %.3f)  uv1: (%.3f, %.3f)  uv2: (%.3f, %.3f)  uv3: (%.3f, %.3f)",
-             fVtx2[0], fVtx2[1], fVtx2[2], fVtx2[3], fVtx2[4], fVtx2[5], fVtx2[6], fVtx2[7]);
-        LOGI("   texSample: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
-             texSample[0], texSample[1], texSample[2], texSample[3],
-             texSample[4], texSample[5], texSample[6], texSample[7],
-             texSample[8], texSample[9], texSample[10], texSample[11],
-             texSample[12], texSample[13], texSample[14], texSample[15]);
+#if PICA_RENDERER_GPU
+    // --- Caminho nativo Adreno GPU: monta e enfileira draw call para o FBO ---
+    bool isBottom = (GetScreenTarget(colorBufPhys) == PicaScreenTarget::Bottom);
+
+    static int s_elemGpuLog = 0;
+    if (++s_elemGpuLog % 60 == 1) {
+        LOGI("ExecuteDrawElements [GPU]: verts=%u, colorBuf=0x%08X, isBottom=%d, tex=0x%08X (%ux%u, type=%u) fbDim=0x%08X vpW=0x%08X vpH=0x%08X vpXY=0x%08X",
+             numVertices, colorBufPhys, (int)isBottom, texAddrPhys, texW, texH, texType,
+             m_regs[GPUREG_FRAMEBUFFER_DIM], m_regs[GPUREG_VIEWPORT_WIDTH],
+             m_regs[GPUREG_VIEWPORT_HEIGHT], m_regs[GPUREG_VIEWPORT_XY]);
     }
 
+    uint32_t bufBase = m_regs[GPUREG_ATTRIBBUFFERS_LOC] << 3;
+    uint32_t b0Off = m_regs[GPUREG_ATTRIBBUFFER0_OFFSET];
+    uint32_t b2Off = m_regs[0x0209];
+    uint32_t idxAddr = bufBase + (idxBufConfig & 0x0FFFFFFFU);
+
+    const float* posPtr = os ? (const float*)os->GetPointer(bufBase + b0Off) : nullptr;
+    const float* uvPtr  = os ? (const float*)os->GetPointer(bufBase + b2Off) : nullptr;
+    const uint8_t* idxPtr = os ? (const uint8_t*)os->GetPointer(idxAddr) : nullptr;
+    bool is16Bit = (idxBufConfig & (1U << 31)) != 0;
+
+    uint32_t b1Off = m_regs[0x0206];
+    uint32_t stride1 = (m_regs[0x0208] >> 16) & 0xFF;
+    const float* colPtr = (os && b1Off > 0 && stride1 >= 16) ? (const float*)os->GetPointer(bufBase + b1Off) : nullptr;
+
+    if (posPtr && uvPtr && idxPtr && numVertices >= 3) {
+        float minX = 1e9f, maxX = -1e9f;
+        float minY = 1e9f, maxY = -1e9f;
+        for (uint32_t i = 0; i < numVertices; ++i) {
+            uint32_t idx = is16Bit ? ((const uint16_t*)idxPtr)[i] : idxPtr[i];
+            float vx = posPtr[idx * 3 + 0];
+            float vy = posPtr[idx * 3 + 1];
+            if (vx < minX) minX = vx;
+            if (vx > maxX) maxX = vx;
+            if (vy < minY) minY = vy;
+            if (vy > maxY) maxY = vy;
+        }
+        bool isScreenSpace = (minX >= -5.0f && maxY <= 1.0f) || (maxX > 210.0f);
+
+        float L_W = 400.0f;
+        float L_H = 240.0f;
+        float cx = 200.0f;
+        float cy = 120.0f;
+
+        PicaDrawCall dc;
+        dc.isBottom = isBottom;
+        dc.texAddrPhys = texAddrPhys;
+        dc.texW = texW;
+        dc.texH = texH;
+        dc.texType = texType;
+
+        dc.indices.reserve(numVertices);
+        uint32_t maxIdx = 0;
+        for (uint32_t i = 0; i < numVertices; ++i) {
+            uint32_t idx = is16Bit ? ((const uint16_t*)idxPtr)[i] : idxPtr[i];
+            dc.indices.push_back((uint16_t)idx);
+            if (idx > maxIdx) maxIdx = idx;
+        }
+
+        dc.vertices.resize(maxIdx + 1);
+        for (uint32_t idx = 0; idx <= maxIdx; ++idx) {
+            float x = posPtr[idx * 3 + 0];
+            float y = posPtr[idx * 3 + 1];
+            float z = posPtr[idx * 3 + 2];
+
+            float sx, sy;
+            if (isScreenSpace) {
+                sx = x;
+                sy = (y < 0) ? -y : y;
+            } else {
+                sx = cx + x;
+                sy = cy - y;
+            }
+
+            dc.vertices[idx].x = sx;
+            dc.vertices[idx].y = sy;
+            dc.vertices[idx].z = z;
+            dc.vertices[idx].u = uvPtr[idx * 2 + 0];
+            dc.vertices[idx].v = uvPtr[idx * 2 + 1];
+
+            if (colPtr) {
+                dc.vertices[idx].r = colPtr[idx * 4 + 0];
+                dc.vertices[idx].g = colPtr[idx * 4 + 1];
+                dc.vertices[idx].b = colPtr[idx * 4 + 2];
+                dc.vertices[idx].a = colPtr[idx * 4 + 3];
+            } else {
+                dc.vertices[idx].r = 1.0f;
+                dc.vertices[idx].g = 1.0f;
+                dc.vertices[idx].b = 1.0f;
+                dc.vertices[idx].a = 1.0f;
+            }
+        }
+
+        pthread_mutex_lock(&m_gpuQueueMutex);
+        m_gpuQueue.push_back(std::move(dc));
+        pthread_mutex_unlock(&m_gpuQueueMutex);
+    }
+#else
+    // --- Caminho legado: Rasterizador em CPU ---
     // Morton LUT for 8x8 tile
     static const uint32_t xLut[8] = { 0x00, 0x01, 0x04, 0x05, 0x10, 0x11, 0x14, 0x15 };
     static const uint32_t yLut[8] = { 0x00, 0x02, 0x08, 0x0A, 0x20, 0x22, 0x28, 0x2A };
 
     // Native 3DS framebuffers are portrait: 240x400 (top) and 240x320 (bottom)
-    bool isBottom = (colorBufPhys >= 0x18200000) && (colorBufPhys != 0x18177000);
+    bool isBottom = (colorBufPhys == 0x18177000) || ((colorBufPhys & 0x00FFFFFF) == 0x00177000) ||
+                    (colorBufPhys >= 0x18200000);
     uint32_t fbW = 240;
-    uint32_t fbH = isBottom ? 320 : 400;
+    uint32_t fbH = 400; // Both 3DS VRAM render targets are 240x400 (with bottom 320 centered)
     uint8_t* fbPtr = os ? os->GetPointer(colorBufPhys) : nullptr;
     uint8_t* texPtr = os ? os->GetPointer(texAddrPhys) : nullptr;
 
@@ -185,32 +273,28 @@ void PicaCommandProcessor::ExecuteDrawElements(HorizonOS* os) {
         // Texture sampler supporting ETC1A4 (13), ETC1 (12), and uncompressed RGBA8 (0)
         uint32_t lastBlockIdx = 0xFFFFFFFF;
         uint32_t cachedRGBA[16] = {0};
-        uint8_t cachedAlpha[16] = {0};
-        uint32_t tilesPerCol = (texH + 7) / 8;
+        uint64_t cachedAlphaPacked = 0;
+        uint32_t tilesPerRow = (texW + 7) / 8;
 
         auto sampleTex = [&](int tx, int ty, uint8_t& outR, uint8_t& outG, uint8_t& outB, uint8_t& outA) {
             tx = std::clamp(tx, 0, (int)texW - 1);
             ty = std::clamp(ty, 0, (int)texH - 1);
-            if (texType == 13) { // GPU_ETC1A4 (16 bytes per 4x4 block)
-                uint32_t tileX = (uint32_t)tx / 8;
-                uint32_t tileY = (uint32_t)ty / 8;
-                uint32_t subBx = ((uint32_t)tx & 7U) / 4;
-                uint32_t subBy = ((uint32_t)ty & 7U) / 4;
-                uint32_t subBlockIdx = (subBx & 1U) | ((subBy & 1U) << 1U);
-                uint32_t blockOffset = (tileX * tilesPerCol + tileY) * 64 + subBlockIdx * 16;
+            uint32_t tileX = (uint32_t)tx / 8;
+            uint32_t tileY = (uint32_t)ty / 8;
+            uint32_t fineX = (uint32_t)tx % 8;
+            uint32_t fineY = (uint32_t)ty % 8;
+
+            if (texType == 13) { // GPU_ETC1A4 (16 bytes per 4x4 subtile, 64 bytes per 8x8 tile)
+                uint32_t subBx = fineX / 4;
+                uint32_t subBy = fineY / 4;
+                uint32_t subBlockIdx = subBx + 2 * subBy;
+                uint32_t blockOffset = (tileY * tilesPerRow + tileX) * 64 + subBlockIdx * 16;
 
                 if (blockOffset != lastBlockIdx) {
                     lastBlockIdx = blockOffset;
                     const uint8_t* blk = texPtr + blockOffset;
-                    // First 8 bytes are 16 4-bit alpha nibbles in 3DS Morton (Z-curve) order
-                    for (int by = 0; by < 4; ++by) {
-                        for (int bx = 0; bx < 4; ++bx) {
-                            uint32_t m = (bx & 1) | ((by & 1) << 1) | ((bx & 2) << 1) | ((by & 2) << 2);
-                            uint8_t nib = (m & 1) ? (blk[m / 2] >> 4) : (blk[m / 2] & 0x0F);
-                            cachedAlpha[by * 4 + bx] = (nib << 4) | nib;
-                        }
-                    }
-                    // Next 8 bytes are ETC1 block with reversed byte endianness on 3DS
+                    memcpy(&cachedAlphaPacked, blk, sizeof(uint64_t));
+
                     uint8_t rev[8];
                     for (int b = 0; b < 8; ++b) {
                         rev[b] = blk[8 + (7 - b)];
@@ -218,21 +302,23 @@ void PicaCommandProcessor::ExecuteDrawElements(HorizonOS* os) {
                     rg_etc1::unpack_etc1_block(rev, cachedRGBA, false);
                 }
 
-                uint32_t px = (uint32_t)tx % 4;
-                uint32_t py = (uint32_t)ty % 4;
-                uint32_t pIdx = py * 4 + px; // Row-major within 4x4 block from rg_etc1
-                outA = cachedAlpha[pIdx];
+                uint32_t subX = fineX % 4;
+                uint32_t subY = fineY % 4;
+                // Alpha in 3DS ETC1A4: 4 bits per texel, indexed by 4 * (subX * 4 + subY)
+                uint32_t aShift = 4 * (subX * 4 + subY);
+                uint8_t a4 = (uint8_t)((cachedAlphaPacked >> aShift) & 0x0F);
+                outA = (a4 << 4) | a4;
+
+                uint32_t pIdx = subY * 4 + subX;
                 uint32_t col = cachedRGBA[pIdx];
                 outR = col & 0xFF;
                 outG = (col >> 8) & 0xFF;
                 outB = (col >> 16) & 0xFF;
-            } else if (texType == 12) { // GPU_ETC1 (8 bytes per 4x4 block)
-                uint32_t tileX = (uint32_t)tx / 8;
-                uint32_t tileY = (uint32_t)ty / 8;
-                uint32_t subBx = ((uint32_t)tx & 7U) / 4;
-                uint32_t subBy = ((uint32_t)ty & 7U) / 4;
-                uint32_t subBlockIdx = (subBx & 1U) | ((subBy & 1U) << 1U);
-                uint32_t blockOffset = (tileX * tilesPerCol + tileY) * 32 + subBlockIdx * 8;
+            } else if (texType == 12) { // GPU_ETC1 (8 bytes per 4x4 subtile, 32 bytes per 8x8 tile)
+                uint32_t subBx = fineX / 4;
+                uint32_t subBy = fineY / 4;
+                uint32_t subBlockIdx = subBx + 2 * subBy;
+                uint32_t blockOffset = (tileY * tilesPerRow + tileX) * 32 + subBlockIdx * 8;
 
                 if (blockOffset != lastBlockIdx) {
                     lastBlockIdx = blockOffset;
@@ -244,18 +330,16 @@ void PicaCommandProcessor::ExecuteDrawElements(HorizonOS* os) {
                     rg_etc1::unpack_etc1_block(rev, cachedRGBA, false);
                 }
 
-                uint32_t px = (uint32_t)tx % 4;
-                uint32_t py = (uint32_t)ty % 4;
-                uint32_t pIdx = py * 4 + px;
+                uint32_t subX = fineX % 4;
+                uint32_t subY = fineY % 4;
+                uint32_t pIdx = subY * 4 + subX;
                 outA = 0xFF;
                 uint32_t col = cachedRGBA[pIdx];
                 outR = col & 0xFF;
                 outG = (col >> 8) & 0xFF;
                 outB = (col >> 16) & 0xFF;
-            } else {
-                uint32_t xMod = (uint32_t)tx & 7U;
-                uint32_t yMod = (uint32_t)ty & 7U;
-                uint32_t texOff = (xLut[xMod] + yLut[yMod] + ((uint32_t)tx & ~7U) * 8U) * 4 + ((uint32_t)ty & ~7U) * texW * 4;
+            } else { // RGBA8 (uncompressed 8x8 Morton tile, 256 bytes per tile)
+                uint32_t texOff = (tileY * tilesPerRow + tileX) * 256 + (xLut[fineX] + yLut[fineY]) * 4;
                 outA = texPtr[texOff + 0]; // 3DS RGBA8 layout: [0]=A, [1]=B, [2]=G, [3]=R
                 outB = texPtr[texOff + 1];
                 outG = texPtr[texOff + 2];
@@ -346,11 +430,13 @@ void PicaCommandProcessor::ExecuteDrawElements(HorizonOS* os) {
                     sx2 = cx + x2; sy2 = cy - y2;
                 }
 
+#ifdef DEBUG_PICA_GPU
                 static int s_triLog = 0;
                 if (++s_triLog % 60 == 1) {
                     LOGI("DrawElements Tri: colorBuf=0x%08X isBottom=%d scrSpace=%d pos0=(%.1f, %.1f) pos1=(%.1f, %.1f) pos2=(%.1f, %.1f) uv0=(%.1f, %.1f) uv1=(%.1f, %.1f) col0=(%.2f, %.2f, %.2f, %.2f)",
                          colorBufPhys, isBottom, isScreenSpace, x0, y0, x1, y1, x2, y2, u0, v0, u1, v1, cr0, cg0, cb0, ca0);
                 }
+#endif
 
                 float area = edge(sx0, sy0, sx1, sy1, sx2, sy2);
                 if (std::abs(area) < 0.0001f) continue;
@@ -365,7 +451,7 @@ void PicaCommandProcessor::ExecuteDrawElements(HorizonOS* os) {
                     int pX = 239 - sy; // 3DS portrait X is inverted landscape Y
                     for (int sx = minSX; sx <= maxSX; ++sx) {
                         float px = (float)sx + 0.5f;
-                        int pY = sx;   // 3DS portrait Y is landscape X
+                        int pY = sx + (isBottom ? 40 : 0); // Bottom screen is centered at offset 40 in 240x400 buffer
 
                         float w0 = edge(sx1, sy1, sx2, sy2, px, py) / area;
                         float w1 = edge(sx2, sy2, sx0, sy0, px, py) / area;
@@ -414,4 +500,6 @@ void PicaCommandProcessor::ExecuteDrawElements(HorizonOS* os) {
             }
         }
     }
+#endif // !PICA_RENDERER_GPU
 }
+

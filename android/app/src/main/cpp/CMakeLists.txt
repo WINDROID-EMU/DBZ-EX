@@ -19,6 +19,7 @@ set(BRIDGE_SOURCES
     horizon/horizon_os.cpp
     gpu/egl_manager.cpp
     gpu/pica_gles.cpp
+    gpu/pica_fbo.cpp
     gpu/pica_display_transfer.cpp
     gpu/pica_cmd_processor.cpp
     gpu/rg_etc1.cpp

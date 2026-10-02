@@ -38,6 +38,11 @@ test.py
 test_svc.c
 test_svc.py
 
+# Reference codebases (local only)
+Luma3DS/
+azahar/
+
+
 # IDE & Editor files
 .idea/
 *.iml

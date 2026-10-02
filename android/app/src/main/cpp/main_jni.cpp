@@ -55,6 +55,12 @@ static void* GameThread(void* arg) {
             g_Horizon->UpdateHID();
         }
 
+#if PICA_RENDERER_GPU
+        if (g_Horizon && g_Renderer) {
+            g_Horizon->FlushGpuCommands(g_Renderer);
+        }
+#endif
+
         uint8_t* topVRAM = g_Horizon ? g_Horizon->GetTopScreenVRAM() : nullptr;
         uint8_t* botVRAM = g_Horizon ? g_Horizon->GetBottomScreenVRAM() : nullptr;
 

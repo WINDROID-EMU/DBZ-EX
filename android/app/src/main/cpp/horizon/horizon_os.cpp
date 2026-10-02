@@ -1,6 +1,7 @@
 #include "horizon_os.h"
 #include "gpu/pica_display_transfer.h"
 #include "gpu/pica_cmd_processor.h"
+#include "gpu/pica_gles.h"
 #include <android/log.h>
 #include <stdlib.h>
 #include <string.h>
@@ -228,16 +229,33 @@ bool HorizonOS::WriteBytes(uint32_t addr, const void* src, size_t size) {
 void HorizonOS::NotifyFramebufferUpdated(uint32_t address, uint32_t width, uint32_t height, uint32_t format) {
     pthread_mutex_lock(&m_frameMutex);
     
-    // Differentiate Top Screen vs Bottom Screen by dimensions:
-    // Top Screen is 400x240 (portrait 240x400, including VRAM-B 0x1F300000/0x1F346500)
-    // Bottom Screen is 320x240 (portrait 240x320)
-    bool isTopScreen = ((width == 400 && height == 240) || (width == 240 && height == 400));
-    bool isBottomScreen = !isTopScreen && ((width == 320 && height == 240) || (width == 240 && height == 320));
-    bool isTopRightEye = (address == 0x1F08CA00 || address == 0x1F0D2F00);
-    if (isTopRightEye) {
+    // 3DS Hardware VRAM Architecture:
+    // 0x1F000000 - 0x1F07FFFF: Top Screen Left Eye Framebuffers (0x1F000000, 0x1F046500)
+    // 0x1F080000 - 0x1F0FFFFF: Top Screen Right Eye Framebuffers (0x1F08CA00, 0x1F0D2F00 - skip in 2D mode)
+    // 0x1F100000 - 0x1F1FFFFF: PICA Render Targets (0x1F119400, 0x1F177000 - internal only)
+    // 0x1F200000 - 0x1F2FFFFF: Bottom Screen Framebuffers (0x1F200000, 0x1F246500)
+    // 0x1F300000 - 0x1F3FFFFF: VRAM-B Temporary/Capture Buffers (0x1F300000, 0x1F346500 - not presentation)
+
+    if (address >= 0x1F080000 && address < 0x1F100000) {
+        // Skip 3D Right Eye in 2D mode
         pthread_mutex_unlock(&m_frameMutex);
         return;
     }
+    if (address >= 0x1F380000) {
+        // Skip scratchpad above bottom screen buffers (0x1F300000 and 0x1F346500 are bottom screen)
+        pthread_mutex_unlock(&m_frameMutex);
+        return;
+    }
+    if (address >= 0x1F100000 && address < 0x1F200000) {
+        // Skip intermediate render targets
+        pthread_mutex_unlock(&m_frameMutex);
+        return;
+    }
+
+    bool isBottomScreen = (address >= 0x1F200000) ||
+                          ((width == 320 && height == 240) || (width == 240 && height == 320));
+    bool isTopScreen = !isBottomScreen &&
+                       ((address < 0x1F080000) || (width == 400 && height == 240) || (width == 240 && height == 400));
 
     if (isTopScreen) {
         size_t bpp = (format == 0) ? 4 : ((format == 1) ? 3 : 2);
@@ -302,7 +320,7 @@ void HorizonOS::NotifyFramebufferUpdated(uint32_t address, uint32_t width, uint3
                      address, width, height, format, nonZero, raw.size());
             }
 
-            // Bottom screen active width is 320, height is 240
+            // Bottom screen active width is 320, height is 240 (centered in 400 stride with 40px margin)
             uint32_t xOffset = (width == 240 && height == 400) ? 40 : 0;
             for (uint32_t y = 0; y < 240; ++y) {
                 for (uint32_t x = 0; x < 320; ++x) {
@@ -343,6 +361,15 @@ uint8_t* HorizonOS::GetTopScreenVRAM() {
 
 uint8_t* HorizonOS::GetBottomScreenVRAM() {
     return m_botFrameRGBA.data();
+}
+
+void HorizonOS::FlushGpuCommands(PicaGLES* renderer) {
+    if (!renderer || !m_picaCmdProc) return;
+    std::vector<PicaDrawCall> draws;
+    m_picaCmdProc->FetchGPUQueue(draws);
+    if (!draws.empty()) {
+        renderer->ExecuteDrawCalls(draws, this);
+    }
 }
 
 void HorizonOS::SignalEvent(uint32_t handle) {
@@ -479,12 +506,28 @@ void HorizonOS::ProcessGspCommandQueue() {
                 fill.value = p1;
                 fill.control = p6 & 0xFFFF;
                 ExecutePicaMemoryFill(fill, this);
+                if (m_picaCmdProc) {
+                    uint32_t low0 = fill.startAddress & 0x00FFFFFF;
+                    if (low0 == 0x00119400) {
+                        m_picaCmdProc->QueueClear(false, 0.0f, 0.0f, 0.0f, 1.0f);
+                    } else if (low0 == 0x00177000) {
+                        m_picaCmdProc->QueueClear(true, 0.0f, 0.0f, 0.0f, 1.0f);
+                    }
+                }
                 if (p3 != 0) {
                     fill.startAddress = p3;
                     fill.endAddress = p5;
                     fill.value = p4;
                     fill.control = (p6 >> 16) & 0xFFFF;
                     ExecutePicaMemoryFill(fill, this);
+                    if (m_picaCmdProc) {
+                        uint32_t low1 = fill.startAddress & 0x00FFFFFF;
+                        if (low1 == 0x00119400) {
+                            m_picaCmdProc->QueueClear(false, 0.0f, 0.0f, 0.0f, 1.0f);
+                        } else if (low1 == 0x00177000) {
+                            m_picaCmdProc->QueueClear(true, 0.0f, 0.0f, 0.0f, 1.0f);
+                        }
+                    }
                 }
                 QueueGspInterrupt(0); // Psc0
                 break;

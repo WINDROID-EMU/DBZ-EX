@@ -214,16 +214,18 @@ bool ExecutePicaDisplayTransfer(const PicaDisplayTransfer& transfer, HorizonOS* 
         return false;
     }
 
+#ifdef DEBUG_PICA_GPU
     uint32_t nonZeroIn = 0;
     for (size_t i = 0; i < input.size(); i += 8) {
         if (input[i] != 0) nonZeroIn++;
     }
     static int s_dtLog = 0;
-    if (++s_dtLog % 30 == 1 || nonZeroIn > 100) {
+    if (++s_dtLog % 60 == 1) {
         LOGI("DisplayTransfer: in=0x%08X out=0x%08X nonZeroIn=%u/%zu flags=0x%08X inSize=0x%08X outSize=0x%08X",
              transfer.inputAddress, transfer.outputAddress, nonZeroIn, input.size(),
              transfer.flags, transfer.inputSize, transfer.outputSize);
     }
+#endif
 
     for (uint32_t y = 0; y < outputHeight; ++y) {
         for (uint32_t x = 0; x < outputWidth; ++x) {
@@ -272,6 +274,7 @@ bool ExecutePicaDisplayTransfer(const PicaDisplayTransfer& transfer, HorizonOS* 
         }
     }
 
+#ifdef DEBUG_PICA_GPU
     uint32_t nonZeroOut = 0;
     for (size_t i = 0; i < output.size(); i += 8) {
         if (output[i] != 0) nonZeroOut++;
@@ -280,6 +283,7 @@ bool ExecutePicaDisplayTransfer(const PicaDisplayTransfer& transfer, HorizonOS* 
         LOGI("DisplayTransfer: wrote output to 0x%08X (%ux%u, fmt=%u, nonZeroOut=%u/%zu)",
              outputAddress, outputWidth, outputHeight, outputFormat, nonZeroOut, output.size());
     }
+#endif
 
     if (!os->WriteBytes(outputAddress, output.data(), outputByteCount)) {
         SetError(error, "PICA display transfer memory write failed");
